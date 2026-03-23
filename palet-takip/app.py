@@ -1,5 +1,4 @@
-# app.py
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import sqlite3
 import hashlib
@@ -8,7 +7,7 @@ import datetime
 import os
 from functools import wraps
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 app.config['SECRET_KEY'] = 'palet-takip-gizli-anahtar-2026'
 CORS(app)
 
@@ -125,11 +124,11 @@ def veritabani_olustur():
     # Depo stoklarını oluştur
     cursor.execute('SELECT id FROM palet_tipleri')
     paletler = cursor.fetchall()
-    for palet_id in paletler:
+    for palet in paletler:
         cursor.execute('''
             INSERT OR IGNORE INTO stoklar (stok_sahibi_tip, stok_sahibi_id, palet_tipi_id, miktar)
             VALUES (?, ?, ?, ?)
-        ''', (SAHIP_TIP_DEPO, 0, palet_id[0], 0))
+        ''', (SAHIP_TIP_DEPO, 0, palet[0], 0))
 
     conn.commit()
     conn.close()
@@ -200,6 +199,10 @@ def hareket_kaydet(yapan_kullanici_id, hareket_tipi, gonderen_tip, gonderen_id,
 
 
 # ==================== API ENDPOINT'LERİ ====================
+
+@app.route('/')
+def index():
+    return send_from_directory('static', 'index.html')
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -316,7 +319,7 @@ def transfer_yap(current_user):
     hareket_tipi = data.get('hareket_tipi')
     palet_tipi_id = data.get('palet_tipi_id')
     miktar = data.get('miktar')
-    alici_id = data.get('alici_id')  # müşteri ID veya dağıtıcı ID
+    alici_id = data.get('alici_id')
     
     if not hareket_tipi or not palet_tipi_id or not miktar:
         return jsonify({'hata': 'Eksik parametreler'}), 400
@@ -340,20 +343,17 @@ def transfer_yap(current_user):
     # Yetki ve transfer mantığı
     if kullanici_tip == 'DEPOCU':
         if hareket_tipi == 'DEPO_DAGITICI':
-            # Depo -> Dağıtıcı
             gonderen_tip = SAHIP_TIP_DEPO
             gonderen_id = 0
             alan_tip = SAHIP_TIP_DAGITICI
             alan_id = alici_id
             
-            # Dağıtıcı kontrolü
             cursor.execute("SELECT id FROM kullanicilar WHERE id = ? AND tip = 'DAGITICI'", (alici_id,))
             if not cursor.fetchone():
                 conn.close()
                 return jsonify({'hata': 'Geçersiz dağıtıcı ID'}), 400
                 
         elif hareket_tipi == 'DAGITICI_DEPO':
-            # Dağıtıcı -> Depo (iade)
             gonderen_tip = SAHIP_TIP_DAGITICI
             gonderen_id = alici_id
             alan_tip = SAHIP_TIP_DEPO
@@ -369,13 +369,11 @@ def transfer_yap(current_user):
             
     elif kullanici_tip == 'DAGITICI':
         if hareket_tipi == 'DAGITICI_MUSTERI':
-            # Dağıtıcı -> Müşteri
             gonderen_tip = SAHIP_TIP_DAGITICI
             gonderen_id = kullanici_id
             alan_tip = SAHIP_TIP_MUSTERI
             alan_id = alici_id
             
-            # Müşteri kontrolü (dağıtıcıya bağlı olmalı)
             cursor.execute('''
                 SELECT id FROM musteriler 
                 WHERE id = ? AND bagli_dagitici_id = ?
@@ -385,7 +383,6 @@ def transfer_yap(current_user):
                 return jsonify({'hata': 'Geçersiz müşteri ID'}), 400
                 
         elif hareket_tipi == 'MUSTERI_DAGITICI':
-            # Müşteri -> Dağıtıcı (iade)
             gonderen_tip = SAHIP_TIP_MUSTERI
             gonderen_id = alici_id
             alan_tip = SAHIP_TIP_DAGITICI
@@ -400,7 +397,6 @@ def transfer_yap(current_user):
                 return jsonify({'hata': 'Geçersiz müşteri ID'}), 400
                 
         elif hareket_tipi == 'DAGITICI_DEPO':
-            # Dağıtıcı -> Depo (iade)
             gonderen_tip = SAHIP_TIP_DAGITICI
             gonderen_id = kullanici_id
             alan_tip = SAHIP_TIP_DEPO
@@ -418,7 +414,6 @@ def transfer_yap(current_user):
         conn.close()
         return jsonify({'hata': f'Yetersiz stok! Mevcut: {mevcut}'}), 400
     
-    # Transfer işlemi
     basarili, hata = stok_guncelle(gonderen_tip, gonderen_id, palet_tipi_id, -miktar)
     if not basarili:
         conn.close()
@@ -426,12 +421,10 @@ def transfer_yap(current_user):
     
     basarili, hata = stok_guncelle(alan_tip, alan_id, palet_tipi_id, +miktar)
     if not basarili:
-        # Geri al
         stok_guncelle(gonderen_tip, gonderen_id, palet_tipi_id, +miktar)
         conn.close()
         return jsonify({'hata': hata}), 400
     
-    # Hareket kaydet
     aciklama = f"{palet[1]} - {miktar} adet transfer"
     hareket_kaydet(kullanici_id, hareket_tipi, gonderen_tip, gonderen_id,
                    alan_tip, alan_id, palet_tipi_id, miktar, aciklama)
@@ -568,14 +561,13 @@ def dagitici_ekle(current_user):
         
         dagitici_id = cursor.lastrowid
         
-        # Stoklarını oluştur
         cursor.execute("SELECT id FROM palet_tipleri")
         paletler = cursor.fetchall()
-        for palet_id in paletler:
+        for palet in paletler:
             cursor.execute('''
                 INSERT INTO stoklar (stok_sahibi_tip, stok_sahibi_id, palet_tipi_id, miktar)
                 VALUES (?, ?, ?, 0)
-            ''', (SAHIP_TIP_DAGITICI, dagitici_id, palet_id[0]))
+            ''', (SAHIP_TIP_DAGITICI, dagitici_id, palet[0]))
         
         conn.commit()
         conn.close()
@@ -605,8 +597,7 @@ def musteri_ekle(current_user):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Dağıtıcı kontrolü
-cursor.execute("SELECT id FROM kullanicilar WHERE id = ? AND tip = 'DAGITICI'", (bagli_dagitici_id,))
+    cursor.execute("SELECT id FROM kullanicilar WHERE id = ? AND tip = 'DAGITICI'", (bagli_dagitici_id,))
     if not cursor.fetchone():
         conn.close()
         return jsonify({'hata': 'Geçersiz dağıtıcı ID'}), 400
@@ -619,14 +610,13 @@ cursor.execute("SELECT id FROM kullanicilar WHERE id = ? AND tip = 'DAGITICI'", 
         
         musteri_id = cursor.lastrowid
         
-        # Stoklarını oluştur
         cursor.execute("SELECT id FROM palet_tipleri")
         paletler = cursor.fetchall()
-        for palet_id in paletler:
+        for palet in paletler:
             cursor.execute('''
                 INSERT INTO stoklar (stok_sahibi_tip, stok_sahibi_id, palet_tipi_id, miktar)
                 VALUES (?, ?, ?, 0)
-            ''', (SAHIP_TIP_MUSTERI, musteri_id, palet_id[0]))
+            ''', (SAHIP_TIP_MUSTERI, musteri_id, palet[0]))
         
         conn.commit()
         conn.close()
@@ -638,6 +628,6 @@ cursor.execute("SELECT id FROM kullanicilar WHERE id = ? AND tip = 'DAGITICI'", 
         return jsonify({'hata': 'Bu müşteri kodu zaten kullanılıyor'}), 400
 
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     veritabani_olustur()
     app.run(host='0.0.0.0', port=5000, debug=False)
